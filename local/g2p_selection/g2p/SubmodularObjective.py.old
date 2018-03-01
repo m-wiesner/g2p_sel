@@ -1,0 +1,637 @@
+from __future__ import print_function
+import sys
+import numpy as np
+import nltk
+import scipy.sparse as sparse
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
+import pdb
+
+
+class FeatureObjective(object):
+    def __init__(self, wordlist, n_order=1, g=np.sqrt, vectorizer='tfidf',
+                 append_ngrams=True):
+        self.wordlist = wordlist
+        self._word_tokens = {}
+        self._word_tokens_word_keys = {}
+        self._ngram_vectorizers = {}
+        self._g = g
+        self.n_order = n_order
+        self.append_ngrams = append_ngrams
+
+        vectorize_methods = {'tfidf': TfidfVectorizer, 'count': CountVectorizer}
+        self.vectorizer = vectorize_methods[vectorizer]
+        
+        self.word_features = None
+        self.subset = None
+        self.p = None
+    
+        self.words_to_tokens() 
+        self.get_tfidf_vectorizers()
+        self.get_word_features()
+    
+        
+    def words_to_tokens(self):
+        '''
+            Example:
+                wordlist = ["hello", "there", "friend"]
+                word_tokens = self.words_to_tokens()
+                for order, tokens in word_tokens.iteritems():
+                    print("Order: ", order)
+                    print("Tokens: ", tokens)
+                
+                Order: 1
+                Tokens: ["h e l l o", "t h e r e", "f r i e n d"]
+                
+                Order: 2
+                Tokens: ["he el ll lo", "th he er re", "fr ri ie en nd"]
+                
+            Input: A list of documens (words in this case).
+            
+            Output: A dictionary of word_tokens. Word tokens has as keys the n-gram order
+                    of the tokens, and as values the wordlist retokenized by the n-gram order.
+        '''
+        if self.append_ngrams:
+            rng = range(self.n_order, 0, -1)
+        else:
+            rng = [self.n_order]
+
+        for n in rng:
+            tokens_order_n = []
+            for w in self.wordlist:
+                w_tokenized_order_n = []
+                for ng in nltk.ngrams(list("0" + w + "1"), n):
+                    w_tokenized_order_n.append("".join(ng))
+                tokens_order_n.append(" ".join(w_tokenized_order_n))
+            
+            self._word_tokens[n] = tokens_order_n
+        
+        for i, w in enumerate(self.wordlist):
+            self._word_tokens_word_keys[w] = {} 
+            for n in rng:
+                self._word_tokens_word_keys[w][n] = self._word_tokens[n][i]
+        
+    
+    def get_tfidf_vectorizers(self):
+        '''
+            Input: word_tokens in the format output by words_to_tokens
+            Output: A sparse matrix of tfidf features where each row a
+                    "document" in the corpus.
+        '''
+        for n_order, corpus in self._word_tokens.iteritems():
+            vectorizer = self.vectorizer(token_pattern=r'(?u)\b\w+\b',
+                                        encoding="utf-8",
+                                        strip_accents=None)
+            vectorizer.fit(corpus)
+            self._ngram_vectorizers[n_order] = vectorizer
+                
+   
+    def set_subset(self, idxs):
+        self.subset = self.word_features[idxs,:].sum(axis=0)
+        
+         
+    def run(self, idx_new):
+        if not idx_new:
+            return self._g(self.subset).sum()
+                
+        return self._g(self.word_features[idx_new, :] + self.subset).sum()
+
+    
+    def get_word_features(self):
+        feats = []
+        for n, corpus in self._word_tokens.iteritems():
+            feats.append(
+                self._ngram_vectorizers[n].transform(corpus)
+            )
+        self.word_features = sparse.hstack(feats).tocsr()
+        self.p = self.word_features.sum(axis=0) / float(self.word_features.sum())
+
+
+    def reset(self):
+        self._word_tokens = {}
+        self._word_tokens_word_keys = {}
+        self.n_order += 1
+        self._ngram_vectorizers = {}
+
+        self.word_features = None
+        self.subset = None
+
+    
+        self.words_to_tokens() 
+        self.get_tfidf_vectorizers()
+        self.get_word_features()
+
+    def compute_entropy(self):
+        prob_vec = self.subset / float(self.subset.sum())
+        return -(np.multiply(prob_vec, np.log2(prob_vec + sys.float_info.epsilon))).sum()
+
+
+    def compute_kl(self):
+        prob_vec = (1.0 + self.subset) / (float(self.subset.sum()) + self.subset.shape[1])
+        return np.multiply(self.p, np.log2(self.p + sys.float_info.epsilon) - np.log2(prob_vec)).sum() 
+
+
+class DecayingFeatureObjective(object):
+    def __init__(self, wordlist, n_order=1, g=np.sqrt, vectorizer='tfidf',
+                 append_ngrams=True):
+        self.wordlist = wordlist
+        self._word_tokens = {}
+        self._word_tokens_word_keys = {}
+        self._ngram_vectorizers = {}
+        self._g = g
+        self.n_order = n_order
+        self.append_ngrams = append_ngrams
+
+        vectorize_methods = {'tfidf': TfidfVectorizer, 'count': CountVectorizer}
+        self.vectorizer = vectorize_methods[vectorizer]
+        
+        self.word_features = None
+        self.subset = None
+        self.p = None
+    
+        self.words_to_tokens() 
+        self.get_tfidf_vectorizers()
+        self.get_word_features()
+   
+        
+    def words_to_tokens(self):
+        '''
+            Example:
+                wordlist = ["hello", "there", "friend"]
+                word_tokens = self.words_to_tokens()
+                for order, tokens in word_tokens.iteritems():
+                    print("Order: ", order)
+                    print("Tokens: ", tokens)
+                
+                Order: 1
+                Tokens: ["h e l l o", "t h e r e", "f r i e n d"]
+                
+                Order: 2
+                Tokens: ["he el ll lo", "th he er re", "fr ri ie en nd"]
+                
+            Input: A list of documens (words in this case).
+            
+            Output: A dictionary of word_tokens. Word tokens has as keys the n-gram order
+                    of the tokens, and as values the wordlist retokenized by the n-gram order.
+        '''
+        if self.append_ngrams:
+            rng = range(self.n_order, 0, -1)
+        else:
+            rng = [self.n_order]
+
+        for n in rng:
+            tokens_order_n = []
+            for w in self.wordlist:
+                w_tokenized_order_n = []
+                for ng in nltk.ngrams(list("0" + w + "1"), n):
+                    w_tokenized_order_n.append("".join(ng))
+                tokens_order_n.append(" ".join(w_tokenized_order_n))
+            
+            self._word_tokens[n] = tokens_order_n
+        
+        for i, w in enumerate(self.wordlist):
+            self._word_tokens_word_keys[w] = {} 
+            for n in rng:
+                self._word_tokens_word_keys[w][n] = self._word_tokens[n][i]
+    
+        
+    def get_tfidf_vectorizers(self):
+        '''
+            Input: word_tokens in the format output by words_to_tokens
+            Output: A sparse matrix of tfidf features where each row a
+                    "document" in the corpus.
+        '''
+        for n_order, corpus in self._word_tokens.iteritems():
+            vectorizer = self.vectorizer(token_pattern=r'(?u)\b\w+\b',
+                                        encoding="utf-8",
+                                        strip_accents=None)
+            vectorizer.fit(corpus)
+            self._ngram_vectorizers[n_order] = vectorizer
+                
+   
+    def set_subset(self, idxs):
+        self.subset = self.word_features[idxs,:].sum(axis=0)
+        
+        
+    def run(self, idx_new):
+        if not idx_new:
+            return np.multiply(self.p, np.log2(self.subset + 1)).sum()
+        
+        return np.multiply(self.p, np.log2(self.word_features[idx_new, :] + self.subset + 1)).sum()
+
+
+    def get_word_features(self):
+        feats = []
+        for n, corpus in self._word_tokens.iteritems():
+            feats.append(
+                self._ngram_vectorizers[n].transform(corpus)
+            )
+        self.word_features = sparse.hstack(feats).tocsr()
+        self.p = self.word_features.sum(axis=0) / float(self.word_features.sum())
+
+    
+    def reset(self):
+        self._word_tokens = {}
+        self._word_tokens_word_keys = {}
+        self.n_order += 1
+        self._ngram_vectorizers = {}
+
+        self.word_features = None
+        self.subset = None
+
+    
+        self.words_to_tokens() 
+        self.get_tfidf_vectorizers()
+        self.get_word_features()
+
+    
+    def smooth_p(self, factor):
+        self.p = (1 - factor) * self.p + factor * ( 1. / self.p.shape[1]) 
+   
+    
+    def compute_entropy(self):
+        prob_vec = self.subset / float(self.subset.sum())
+        return -(np.multiply(prob_vec, np.log2(prob_vec + sys.float_info.epsilon))).sum()
+
+
+
+
+class DecayingCrossEntropyObjective(object):
+    def __init__(self, wordlist, n_order=1, g=np.sqrt, vectorizer='tfidf',
+                 append_ngrams=True):
+        self.wordlist = wordlist
+        self._word_tokens = {}
+        self._word_tokens_word_keys = {}
+        self._ngram_vectorizers = {}
+        self._g = g
+        self.n_order = n_order
+        self.append_ngrams = append_ngrams
+
+        vectorize_methods = {'tfidf': TfidfVectorizer, 'count': CountVectorizer}
+        self.vectorizer = vectorize_methods[vectorizer]
+        
+        self.word_features = None
+        self.subset = None
+        self.p = None
+    
+        self.words_to_tokens() 
+        self.get_tfidf_vectorizers()
+        self.get_word_features()
+   
+        
+    def words_to_tokens(self):
+        '''
+            Example:
+                wordlist = ["hello", "there", "friend"]
+                word_tokens = self.words_to_tokens()
+                for order, tokens in word_tokens.iteritems():
+                    print("Order: ", order)
+                    print("Tokens: ", tokens)
+                
+                Order: 1
+                Tokens: ["h e l l o", "t h e r e", "f r i e n d"]
+                
+                Order: 2
+                Tokens: ["he el ll lo", "th he er re", "fr ri ie en nd"]
+                
+            Input: A list of documens (words in this case).
+            
+            Output: A dictionary of word_tokens. Word tokens has as keys the n-gram order
+                    of the tokens, and as values the wordlist retokenized by the n-gram order.
+        '''
+        if self.append_ngrams:
+            rng = range(self.n_order, 0, -1)
+        else:
+            rng = [self.n_order]
+
+        for n in rng:
+            tokens_order_n = []
+            for w in self.wordlist:
+                w_tokenized_order_n = []
+                for ng in nltk.ngrams(list("0" + w + "1"), n):
+                    w_tokenized_order_n.append("".join(ng))
+                tokens_order_n.append(" ".join(w_tokenized_order_n))
+            
+            self._word_tokens[n] = tokens_order_n
+        
+        for i, w in enumerate(self.wordlist):
+            self._word_tokens_word_keys[w] = {} 
+            for n in rng:
+                self._word_tokens_word_keys[w][n] = self._word_tokens[n][i]
+    
+        
+    def get_tfidf_vectorizers(self):
+        '''
+            Input: word_tokens in the format output by words_to_tokens
+            Output: A sparse matrix of tfidf features where each row a
+                    "document" in the corpus.
+        '''
+        for n_order, corpus in self._word_tokens.iteritems():
+            vectorizer = self.vectorizer(token_pattern=r'(?u)\b\w+\b',
+                                        encoding="utf-8",
+                                        strip_accents=None)
+            vectorizer.fit(corpus)
+            self._ngram_vectorizers[n_order] = vectorizer
+                
+   
+    def set_subset(self, idxs):
+        self.subset = self.word_features[idxs,:].sum(axis=0)
+        
+        
+    def run(self, idx_new):
+        if not idx_new:
+            return np.multiply(self.p, np.log2(self.subset + 1)).sum()
+        
+        return np.multiply(self.p, np.log2(self.word_features[idx_new, :] + self.subset + 1)).sum()
+
+
+    def get_word_features(self):
+        feats = []
+        for n, corpus in self._word_tokens.iteritems():
+            feats.append(
+                self._ngram_vectorizers[n].transform(corpus)
+            )
+        self.word_features = sparse.hstack(feats).tocsr()
+        self.p = self.word_features.sum(axis=0) / float(self.word_features.sum())
+
+    
+    def reset(self):
+        self._word_tokens = {}
+        self._word_tokens_word_keys = {}
+        self.n_order += 1
+        self._ngram_vectorizers = {}
+
+        self.word_features = None
+        self.subset = None
+
+    
+        self.words_to_tokens() 
+        self.get_tfidf_vectorizers()
+        self.get_word_features()
+
+    
+    def smooth_p(self, factor):
+        self.p = (1 - factor) * self.p + factor * ( 1. / self.p.shape[1]) 
+   
+    
+    def compute_entropy(self):
+        prob_vec = self.subset / float(self.subset.sum())
+        return -(np.multiply(prob_vec, np.log2(prob_vec + sys.float_info.epsilon))).sum()
+
+    
+    def compute_kl(self):
+        prob_vec = (1.0 + self.subset) / (float(self.subset.sum()) + self.subset.shape[1])
+        return np.multiply(self.p, np.log2(self.p + sys.float_info.epsilon) - np.log2(prob_vec)).sum() 
+
+
+class CrossEntropyObjective(object):
+    def __init__(self, wordlist, n_order=1, g=np.sqrt, vectorizer='tfidf',
+                 append_ngrams=True, prune=False, prune_thresh=0.0000):
+        self.wordlist = wordlist
+        self._word_tokens = {}
+        self._word_tokens_word_keys = {}
+        self._ngram_vectorizers = {}
+        self._g = g
+        self.n_order = n_order
+        self.append_ngrams = append_ngrams
+        self.prune = prune
+        self.prune_thresh=prune_thresh
+
+        vectorize_methods = {'tfidf': TfidfVectorizer, 'count': CountVectorizer}
+        self.vectorizer = vectorize_methods[vectorizer]
+        
+        self.word_features = None
+        self.subset = None
+        self.p = None
+    
+        self.words_to_tokens() 
+        self.get_tfidf_vectorizers()
+        self.get_word_features()
+   
+        
+    def words_to_tokens(self):
+        '''
+            Example:
+                wordlist = ["hello", "there", "friend"]
+                word_tokens = self.words_to_tokens()
+                for order, tokens in word_tokens.iteritems():
+                    print("Order: ", order)
+                    print("Tokens: ", tokens)
+                
+                Order: 1
+                Tokens: ["h e l l o", "t h e r e", "f r i e n d"]
+                
+                Order: 2
+                Tokens: ["he el ll lo", "th he er re", "fr ri ie en nd"]
+                
+            Input: A list of documens (words in this case).
+            
+            Output: A dictionary of word_tokens. Word tokens has as keys the n-gram order
+                    of the tokens, and as values the wordlist retokenized by the n-gram order.
+        '''
+        if self.append_ngrams:
+            rng = range(self.n_order, 0, -1)
+        else:
+            rng = [self.n_order]
+
+        for n in rng:
+            tokens_order_n = []
+            for w in self.wordlist:
+                w_tokenized_order_n = []
+                for ng in nltk.ngrams(list("0" + w + "1"), n):
+                    w_tokenized_order_n.append("".join(ng))
+                tokens_order_n.append(" ".join(w_tokenized_order_n))
+            
+            self._word_tokens[n] = tokens_order_n
+        
+        for i, w in enumerate(self.wordlist):
+            self._word_tokens_word_keys[w] = {} 
+            for n in rng:
+                self._word_tokens_word_keys[w][n] = self._word_tokens[n][i]
+    
+        
+    def get_tfidf_vectorizers(self):
+        '''
+            Input: word_tokens in the format output by words_to_tokens
+            Output: A sparse matrix of tfidf features where each row a
+                    "document" in the corpus.
+        '''
+        for n_order, corpus in self._word_tokens.iteritems():
+            vectorizer = self.vectorizer(token_pattern=r'(?u)\b\w+\b',
+                                        encoding="utf-8",
+                                        strip_accents=None)
+            vectorizer.fit(corpus)
+            self._ngram_vectorizers[n_order] = vectorizer
+                
+   
+    def set_subset(self, idxs):
+        self.subset = self.word_features[idxs,:].sum(axis=0)
+        
+        
+    def run(self, idx_new):
+        if not idx_new:
+            return np.multiply(self.p, np.log2(self.subset + 1)).sum()
+
+        return np.multiply(self.p, np.log2(self.word_features[idx_new, :] + self.subset + 1)).sum()
+
+
+    def get_word_features(self):
+        feats = []
+        for n, corpus in self._word_tokens.iteritems():
+            feats.append(
+                self._ngram_vectorizers[n].transform(corpus)
+            )
+        self.word_features = sparse.hstack(feats).tocsr()
+        self.p = self.word_features.sum(axis=0) / float(self.word_features.sum())
+        print("Probabilities: ", self.p)
+
+        # Prune and renormalize
+        if self.prune:
+            self.p[self.p < self.prune_thresh] = 0.0
+            self.p[self.p > 0.0] = 1.0
+            self.p /= self.p.sum()      
+    
+    def reset(self):
+        self._word_tokens = {}
+        self._word_tokens_word_keys = {}
+        self.n_order += 1
+        self._ngram_vectorizers = {}
+
+        self.word_features = None
+        self.subset = None
+
+    
+        self.words_to_tokens() 
+        self.get_tfidf_vectorizers()
+        self.get_word_features()
+
+    
+    def compute_entropy(self):
+        prob_vec = self.subset / float(self.subset.sum())
+        return -(np.multiply(prob_vec, np.log2(prob_vec + sys.float_info.epsilon))).sum()
+
+    
+    def compute_kl(self):
+        prob_vec = (1.0 + self.subset) / (float(self.subset.sum()) + self.subset.shape[1])
+        return np.multiply(self.p, np.log2(self.p + sys.float_info.epsilon) - np.log2(prob_vec)).sum() 
+
+
+class FeatureCoverageObjective(CrossEntropyObjective):
+    def get_word_features(self):
+        feats = []
+        for n, corpus in self._word_tokens.iteritems():
+            feats.append(
+                self._ngram_vectorizers[n].transform(corpus)
+            )
+        self.word_features = sparse.hstack(feats).tocsr()
+        self.word_features[self.word_features > 0 ] = 1.0
+        self.p = self.word_features.sum(axis=0)
+        #self.p = self.word_features.sum(axis=0) / float(self.word_features.sum())
+        print("Probabilities: ", self.p)
+
+
+    def run(self, idx_new):
+        if not idx_new:
+            vec = np.squeeze(np.asarray(self.subset[self.subset < self.p]))
+            return np.multiply(np.squeeze(np.asarray(self.p[self.subset < self.p])), 1.0 - (1.0 / (5.0 ** vec))).sum()
+
+        vec = self.subset + self.word_features[idx_new, :]
+        p_vec = np.squeeze(np.asarray(self.p[vec < self.p]))
+        vec = np.squeeze(np.asarray(vec[vec < self.p]))
+        return np.multiply(p_vec, 1.0 - (1.0 / (5.0 ** vec))).sum()
+
+
+class EntropyObjective(object):
+    def __init__(self, wordlist, n_order=1, g=np.sqrt, vectorizer='count',
+                append_ngrams=False):
+        self.wordlist = wordlist
+        self._word_tokens = {}
+        self._word_tokens_word_keys = {}
+        self._ngram_vectorizers = {}
+        self.n_order = n_order
+        self._g = g
+        self.append_ngrams = append_ngrams
+
+        vectorize_methods = {'tfidf': TfidfVectorizer, 'count': CountVectorizer}
+        self.vectorizer = vectorize_methods[vectorizer]
+        
+        self.word_features = None
+        self.subset = None
+
+    
+        self.words_to_tokens() 
+        self.get_tfidf_vectorizers()
+        self.get_word_features()
+
+    def words_to_tokens(self):
+        '''
+            Example:
+                wordlist = ["hello", "there", "friend"]
+                word_tokens = self.words_to_tokens()
+                for order, tokens in word_tokens.iteritems():
+                    print("Order: ", order)
+                    print("Tokens: ", tokens)
+                
+                Order: 1
+                Tokens: ["h e l l o", "t h e r e", "f r i e n d"]
+                
+                Order: 2
+                Tokens: ["he el ll lo", "th he er re", "fr ri ie en nd"]
+                
+            Input: A list of documens (words in this case).
+            
+            Output: A dictionary of word_tokens. Word tokens has as keys the n-gram order
+                    of the tokens, and as values the wordlist retokenized by the n-gram order.
+        '''
+        n = self.n_order
+        tokens_order_n = []
+        for w in self.wordlist:
+            w_tokenized_order_n = []
+            for ng in nltk.ngrams(list("0" + w + "1"), n):
+                w_tokenized_order_n.append("".join(ng))
+            tokens_order_n.append(" ".join(w_tokenized_order_n))
+        
+        self._word_tokens[n] = tokens_order_n
+        
+        for i, w in enumerate(self.wordlist):
+            self._word_tokens_word_keys[w] = {} 
+            n = self.n_order
+            self._word_tokens_word_keys[w][n] = self._word_tokens[n][i]
+        
+    
+        
+    def get_tfidf_vectorizers(self):
+        '''
+            Input: word_tokens in the format output by words_to_tokens
+            Output: A sparse matrix of tfidf features where each row a
+                    "document" in the corpus.
+        '''
+        for n_order, corpus in self._word_tokens.iteritems():
+            vectorizer = self.vectorizer(token_pattern=r'(?u)\b\w+\b',
+                                        encoding="utf-8",
+                                        strip_accents=None)
+            vectorizer.fit(corpus)
+            self._ngram_vectorizers[n_order] = vectorizer
+                
+   
+    def set_subset(self, idxs):
+        self.subset = self.word_features[idxs,:].sum(axis=0)
+        
+         
+    def run(self, idx_new):
+        count_vec = self.word_features[idx_new, :] + self.subset
+        prob_vec = count_vec / float(count_vec.sum())
+        return -(np.multiply(prob_vec, np.log2(prob_vec + sys.float_info.epsilon))).sum()
+
+    
+    def get_word_features(self):
+        feats = []
+        for n, corpus in self._word_tokens.iteritems():
+            feats.append(
+                self._ngram_vectorizers[n].transform(corpus)
+            )
+        self.word_features = sparse.hstack(feats).tocsr()
+
+# I have to reimplement this. The reference is in BatchActiveLearner_Graph.py
+class FacilityLocationObjective(object):
+    def __init__(self):
+        pass
